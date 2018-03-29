@@ -1,0 +1,115 @@
+use(getProjectPath()+"paint_manager.chai")
+
+var targetFilename = "data/Sea_shore.jpg"
+var targetMaskFilename_00 = "data/mask.png"
+
+// painting window on the canvas
+var canvas_x = 30.0
+var canvas_y = 30.0
+var canvas_w = 800.0
+var canvas_h = 532.0
+
+// wipe window
+var wipe_x = canvas_x+canvas_w
+var wipe_y = 10.0
+var wipe_w = 1200.0 - wipe_x - 50
+var wipe_h = 800.0 - wipe_y - 50
+
+def loadInput(filename, imageSize) {
+  return resize(imLoad_rgb(filename), imageSize)
+}
+
+// initialize painter object
+var painter = createPainter("127.0.0.1", "127.0.0.1", 33333, 55555)
+// set the painting window (mm) and retrieve corresponding feedback image resolution
+var imageSize = painter.setPaintingRoi(canvas_x, canvas_y, canvas_w, canvas_h)
+// set the wiping window (mm)
+var imageWipeSize = painter.setWipeRoi(wipe_x, wipe_y, wipe_w, wipe_h)
+
+// query all available brush types
+var availableBrushes = painter.getAvailableBrushes()
+
+// create inputs
+var inputImage_srgb = loadInput(targetFilename, imageSize)
+var mask0 = resize(imLoad_gray(targetMaskFilename_00), imageSize)
+
+// create paint manager
+// nr colors
+var alpha = 0.5
+var nrColors = 5
+var paintManager = createPaintManagerAcrylic()
+var basePigments = paintManager.getBasePigments()
+//paintManager.add(basePigments.get(basePigments.size()-3))
+paintManager.extract(convertColor(inputImage_srgb, srgb_2_rgb), nrColors)
+//paintManager.add(basePigments.get(basePigments.size()-2))
+for (var i = 0; i < paintManager.getPalette().size(); ++i) {
+   paintManager.mixInBasePigment(i, basePigments.size()-1, alpha, 1.0-alpha)
+}
+//var paintManager = createPaintManagerEmpty();
+//paintManager.load("data/palette")
+paintManager.save("data/palette")
+
+
+// add the palette to the robot
+painter.addPalette(paintManager.getPalette())
+
+// show the initial palette
+var paletteViewer = Viewer("Palette 0")
+paletteViewer.show(paintManager.showPalette())
+
+// create layer painter object
+var layerPainter = LayerPainter(painter, paintManager);
+layerPainter.setOutputFolder(getProjectPath()+"output")
+layerPainter.getParamsInput().sigmaSpatialScale = 2.0;
+layerPainter.getParamsInput().sigmaColor = 8.0;
+layerPainter.getParamsInput().inputSRGB = inputImage_srgb;
+
+layerPainter.getParamsRegionExtraction().regionScale = 1.5;
+
+layerPainter.getParamsStroke().curvatureAlpha = 0.8;
+layerPainter.getParamsStroke().stepSize = -1;
+layerPainter.getParamsStroke().maxLen = 20;
+layerPainter.getParamsStroke().minLen = 5;
+layerPainter.getParamsStroke().blockVisitedRegions = true;
+layerPainter.getParamsStroke().clampBrushRadius = false;
+layerPainter.getParamsStroke().orientationSmoothAlpha = 0.0
+layerPainter.getParamsStroke().brushTilt = PI_HALF*0.9
+layerPainter.getParamsStroke().enable_TCP_offsetting = false
+
+layerPainter.getParamsConvergence().rms_local = 0.08;
+layerPainter.getParamsConvergence().rms_global = 0.1;
+
+layerPainter.getParamsCalibrate().calibrateKS = false;
+
+layerPainter.getParamsPaintSequence().nrWipes = 2;
+layerPainter.getParamsPaintSequence().dipAfter = 5000;
+layerPainter.getParamsPaintSequence().dipAfterStrokes = 8;
+layerPainter.getParamsPaintSequence().washTime = 1;
+//layerPainter.getParamsPaintSequence().waitDry = 10*60;
+
+painter.addBrush(availableBrushes[0], 0);
+painter.addBrush(availableBrushes[1], 1);
+painter.addBrush(availableBrushes[2], 2);
+painter.addBrush(availableBrushes[3], 3);
+
+//paintManager.createStrokeSamples(painter, availableBrushes[0], 0, 300, 100, true, true, false)
+//paintManager.save("data/palette_samples")
+
+// large brush
+layerPainter.getParamsInput().mask = mask0
+layerPainter.getParamsOrientations().sigmaSpatialScale = 1.0;
+layerPainter.getParamsOrientations().sigmaColor = 5.0;
+layerPainter.getParamsOrientations().innerBlurScale = 0.0;
+layerPainter.getParamsOrientations().outerBlurScale = 0.5;
+
+
+layerPainter.getParamsConvergence().maxIterations = 15;
+layerPainter.paint(availableBrushes[0]);
+layerPainter.getParamsConvergence().maxIterations = 13;
+layerPainter.paint(availableBrushes[1]);
+layerPainter.getParamsConvergence().maxIterations = 12;
+layerPainter.paint(availableBrushes[2]);
+//layerPainter.paint(availableBrushes[3]);
+
+var resultImage = painter.getFeedback().wait().getPicture()
+imSave("data/result.jpg", resultImage)

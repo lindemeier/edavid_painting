@@ -1,0 +1,7 @@
+def PaintManager::load(directory) {
+    this.loadAbsolut(getProjectPath() + "/" + directory)
+}
+
+def PaintManager::save(directory) {
+    this.saveAbsolut(getProjectPath() + "/" + directory)
+}
