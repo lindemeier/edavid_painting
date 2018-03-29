@@ -1,115 +1,198 @@
+/***************************************
+########################################
+Includes
+########################################
+***************************************/
+// include other scripts
 use(getProjectPath()+"paint_manager.chai")
 
+/***************************************
+########################################
+Input data
+########################################
+***************************************/
+// function to load input images and resize them according to the size of the painting area
+def loadInput(filename, imageSize) {
+  return resize(imLoad_rgb(filename), imageSize)
+}
+
+// target image to be reproduced
 var targetFilename = "data/Sea_shore.jpg"
+// image to mask areas from painting. (<=0 ignore, > 0 paint)
 var targetMaskFilename_00 = "data/mask.png"
 
-// painting window on the canvas
-var canvas_x = 30.0
-var canvas_y = 30.0
-var canvas_w = 800.0
-var canvas_h = 532.0
+// true if palette should be extracted or loaded from the disc
+var recomputePalette = true
 
-// wipe window
+/***************************************
+########################################
+canvas configuration
+########################################
+***************************************/
+// painting area on the canvas (mm)
+var canvas_x = 30.0 // top left
+var canvas_y = 30.0 // top left
+var canvas_w = 800.0 // width
+var canvas_h = 532.0 // height
+// wipe area (mm)
 var wipe_x = canvas_x+canvas_w
 var wipe_y = 10.0
 var wipe_w = 1200.0 - wipe_x - 50
 var wipe_h = 800.0 - wipe_y - 50
 
-def loadInput(filename, imageSize) {
-  return resize(imLoad_rgb(filename), imageSize)
-}
 
-// initialize painter object
+/***************************************
+########################################
+initializing connection and data ---
+preparing hardware
+########################################
+***************************************/
+// initialize painter object used to access the robot and camera
 var painter = createPainter("127.0.0.1", "127.0.0.1", 33333, 55555)
-// set the painting window (mm) and retrieve corresponding feedback image resolution
+// set the painting area (mm) and retrieve corresponding feedback image resolution
 var imageSize = painter.setPaintingRoi(canvas_x, canvas_y, canvas_w, canvas_h)
-// set the wiping window (mm)
+// set the wiping area (mm)
 var imageWipeSize = painter.setWipeRoi(wipe_x, wipe_y, wipe_w, wipe_h)
-
 // query all available brush types
 var availableBrushes = painter.getAvailableBrushes()
-
-// create inputs
+// load the target image
 var inputImage_srgb = loadInput(targetFilename, imageSize)
+// load single channel image mask and resize
 var mask0 = resize(imLoad_gray(targetMaskFilename_00), imageSize)
 
-// create paint manager
-// nr colors
-var alpha = 0.5
-var nrColors = 5
-var paintManager = createPaintManagerAcrylic()
-var basePigments = paintManager.getBasePigments()
-//paintManager.add(basePigments.get(basePigments.size()-3))
-paintManager.extract(convertColor(inputImage_srgb, srgb_2_rgb), nrColors)
-//paintManager.add(basePigments.get(basePigments.size()-2))
-for (var i = 0; i < paintManager.getPalette().size(); ++i) {
-   paintManager.mixInBasePigment(i, basePigments.size()-1, alpha, 1.0-alpha)
+/***************************************
+########################################
+loading or creating paint color palette
+########################################
+***************************************/
+// create paint manager used to manage paints and brush/paint effect used in the stroke quality evaluation
+var paintManager = createPaintManagerAcrylic()// create an empty paint palette with acrylic paints as basis
+if (recomputePalette) {
+  var alpha = 0.1 // concentration of thinning medium mixed in the original paints
+  var nrColors = 5 // number of colors to extract
+  var basePigments = paintManager.getBasePigments() // get the list of basis pigments
+  paintManager.extract(convertColor(inputImage_srgb, srgb_2_rgb), nrColors) // extract palette from the target image
+  // mix in thinning medium
+  for (var i = 0; i < paintManager.getPalette().size(); ++i) {
+    paintManager.mixInBasePigment(i, basePigments.size()-1, alpha, 1.0-alpha)
+  }
+  // serialize the paint manager.
+  paintManager.save("data/palette")
+} else  {
+  paintManager.load("data/palette")
 }
-//var paintManager = createPaintManagerEmpty();
-//paintManager.load("data/palette")
-paintManager.save("data/palette")
-
-
+// show the palette
+var paletteViewer = Viewer("Palette 0")
+paletteViewer.show(paintManager.showPalette())
 // add the palette to the robot
 painter.addPalette(paintManager.getPalette())
 
-// show the initial palette
-var paletteViewer = Viewer("Palette 0")
-paletteViewer.show(paintManager.showPalette())
-
-// create layer painter object
+/***************************************
+########################################
+initializing painting object
+########################################
+***************************************/
+// create layer painter object executing the painting process
 var layerPainter = LayerPainter(painter, paintManager);
-layerPainter.setOutputFolder(getProjectPath()+"output")
-layerPainter.getParamsInput().sigmaSpatialScale = 2.0;
-layerPainter.getParamsInput().sigmaColor = 8.0;
-layerPainter.getParamsInput().inputSRGB = inputImage_srgb;
 
+layerPainter.setOutputFolder(getProjectPath()+"output") // set the folder where the painter should output images for debugging and visualization
+
+
+/***************************************
+########################################
+parameters for the painting process
+########################################
+***************************************/
+// bilateral filter spatial sigma scale, it is
+// multiplied with the brush radius and the result
+// is used as the sigma of the blur
+layerPainter.getParamsInput().sigmaSpatialScale = 3.0;
+// bilateral filter color sigma
+layerPainter.getParamsInput().sigmaColor = 12.0;
+// target image
+layerPainter.getParamsInput().inputSRGB = inputImage_srgb;
+// mask image
+layerPainter.getParamsInput().mask = mask0
+
+// factor for scaling the size of the extracted regions,
+// larger values increase the optical blending effect
+// setting it to 1 means that the cells size will be equal to the brush size
 layerPainter.getParamsRegionExtraction().regionScale = 1.5;
 
-layerPainter.getParamsStroke().curvatureAlpha = 0.8;
+// stroke smoothness (0 for straight, 1 for curved strokes)
+layerPainter.getParamsStroke().curvatureAlpha = 0.5;
+// step size used for tracing stroke paths ( < 0) for step
+// size computed from brush radius
 layerPainter.getParamsStroke().stepSize = -1;
-layerPainter.getParamsStroke().maxLen = 20;
-layerPainter.getParamsStroke().minLen = 5;
+// max number of stroke control points
+layerPainter.getParamsStroke().maxLen = 45;
+// min number of stroke control points
+layerPainter.getParamsStroke().minLen = 15;
+// block regions from stroke seeding when the have
+// been visited by another, previously generated stroke
 layerPainter.getParamsStroke().blockVisitedRegions = true;
 layerPainter.getParamsStroke().clampBrushRadius = false;
+// 0 for straight orientations-> all
+// orientation control points are set to the
+// mean orientation
 layerPainter.getParamsStroke().orientationSmoothAlpha = 0.0
+ // angle between canvas and brush in radians
 layerPainter.getParamsStroke().brushTilt = PI_HALF*0.9
-layerPainter.getParamsStroke().enable_TCP_offsetting = false
 
+
+// minimum allowed difference for evaluating regions (if difference falls under this value, the corresponding region is skipped)
 layerPainter.getParamsConvergence().rms_local = 0.08;
+// if the mean difference of mean differences of all regions fall below this value, the process is stopped and continued with the next brush.
 layerPainter.getParamsConvergence().rms_global = 0.1;
 
-layerPainter.getParamsCalibrate().calibrateKS = false;
+// bilateral filter spatial sigma scale, it is
+// multiplied with the brush radius and the result
+// is used as the sigma of the blur
+layerPainter.getParamsOrientations().sigmaSpatialScale = 1.0;
+// bilateral filter color sigma
+layerPainter.getParamsOrientations().sigmaColor = 5.0;
+//  Gaussian blur scale for orientation derivatives
+layerPainter.getParamsOrientations().innerBlurScale = 0.0;
+// Gaussian blur scale for orientation tensors
+layerPainter.getParamsOrientations().outerBlurScale = 0.5;
 
+// number of wipes
 layerPainter.getParamsPaintSequence().nrWipes = 2;
+// maximum length of strokes without dipping into paint
 layerPainter.getParamsPaintSequence().dipAfter = 5000;
+// after this number of strokes was reached, the brush will be dipped into paint again
 layerPainter.getParamsPaintSequence().dipAfterStrokes = 8;
+// duration of the cleaning step (secs)
 layerPainter.getParamsPaintSequence().washTime = 1;
+// break before taking a feedback photo to ensure the paint has dried in secs (standard 0secs)
 //layerPainter.getParamsPaintSequence().waitDry = 10*60;
 
+/***************************************
+########################################
+setting up the bruses
+########################################
+***************************************/
+// add brushes to the repository
 painter.addBrush(availableBrushes[0], 0);
 painter.addBrush(availableBrushes[1], 1);
 painter.addBrush(availableBrushes[2], 2);
 painter.addBrush(availableBrushes[3], 3);
 
-//paintManager.createStrokeSamples(painter, availableBrushes[0], 0, 300, 100, true, true, false)
-//paintManager.save("data/palette_samples")
-
-// large brush
-layerPainter.getParamsInput().mask = mask0
-layerPainter.getParamsOrientations().sigmaSpatialScale = 1.0;
-layerPainter.getParamsOrientations().sigmaColor = 5.0;
-layerPainter.getParamsOrientations().innerBlurScale = 0.0;
-layerPainter.getParamsOrientations().outerBlurScale = 0.5;
-
-
+/***************************************
+########################################
+execute the painting loop
+########################################
+***************************************/
+// execute the painting process using a given brush and max number of layers applied
 layerPainter.getParamsConvergence().maxIterations = 15;
 layerPainter.paint(availableBrushes[0]);
-layerPainter.getParamsConvergence().maxIterations = 13;
-layerPainter.paint(availableBrushes[1]);
-layerPainter.getParamsConvergence().maxIterations = 12;
-layerPainter.paint(availableBrushes[2]);
-//layerPainter.paint(availableBrushes[3]);
 
+
+/***************************************
+########################################
+save result
+########################################
+***************************************/
+// retrieve a picture and save it
 var resultImage = painter.getFeedback().wait().getPicture()
 imSave("data/result.jpg", resultImage)
